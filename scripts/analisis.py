@@ -93,8 +93,8 @@ A["iag_seccion"] = r"""
 > ⚠️ **COMPLETAR con la conversación real.** El enunciado exige adjuntar el historial de la consulta (prompt, respuesta e interacciones). El prompt sugerido está en `prompt_IAG.md`.
 
 ### 8.1 Declaración del uso
-- **Herramienta:** *(nombre de la herramienta y versión)*.
-- **Tipo de uso:** (1) actividad de verificación obligatoria: recomendación de β, λ, K y del criterio de máscara; *(agregar otros usos reales: ayuda con código, redacción, depuración, etc.)*.
+- **Claude Code (Anthropic, modelo Claude Opus 5.5):** generación inicial del código del notebook (pipeline, experimentos, criterios de máscara, figuras y bonos), descarga y preparación de los datos, depuración y redacción inicial de las justificaciones y del análisis de resultados a partir de los valores obtenidos. Todo el contenido fue revisado por el grupo. *(ajustar según lo que efectivamente revisaron, modificaron o redactaron ustedes)*
+- **Verificación obligatoria:** *(nombre de la herramienta usada para la consulta del prompt de `prompt_IAG.md`)*: recomendación de β, λ, K y del criterio de máscara.
 
 ### 8.2 Prompt utilizado y respuesta
 *(pegar el prompt, la respuesta y las interacciones siguientes, o adjuntar el enlace/captura del historial)*
