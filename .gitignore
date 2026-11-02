@@ -7,3 +7,4 @@ __pycache__/
 
 # Archivos del sistema
 .DS_Store
+scripts/analisis.json
