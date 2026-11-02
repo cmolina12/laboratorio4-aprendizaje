@@ -326,6 +326,14 @@ def mascara_criterio_b(img, etiquetas):
 
 
 CRITERIOS = {"A: más oscuro": mascara_criterio_a, "B: oscuros sin borde + limpieza": mascara_criterio_b}
+
+
+def pintar_grupos(img, etiquetas):
+    rgb = img.reshape(-1, 3).astype(float)
+    out = np.zeros_like(rgb)
+    for k in np.unique(etiquetas):
+        out[etiquetas == k] = rgb[etiquetas == k].mean(0)
+    return out.reshape(img.shape).astype(np.uint8)
 """)
 md(r"""
 Ejemplo del cálculo de las características de grupo en una imagen con viñeteado fuerte (ISIC_0000133, esquinas negras) con λ/β = 0.75 y el K elegido por silueta. El grupo más oscuro es el de las esquinas, con casi todos sus píxeles en la franja de borde: el criterio A lo toma como lesión (Dice = 0) y el criterio B lo descarta.
@@ -409,28 +417,114 @@ md(r"""
 ### 4.2 Actividad de verificación con IAG (antes de elegir la configuración final)
 Antes de seleccionar la configuración final se consultó a una herramienta de IAG (ver la conversación completa y el análisis en la sección 8). El prompt **no adjunta imágenes ni menciona el nombre del conjunto de datos**; describe las imágenes. La recomendación recibida se traduce a los parámetros de nuestro método y se evalúa en las 15 imágenes de ajuste exactamente con el mismo protocolo.
 """)
+md(r"""
+**Recomendación recibida (ChatGPT):** β = 1, λ = 0.30 (λ/β = 0.30), **K = 5 fijo**, y un criterio de selección de grupos por puntaje:
+
+1. Luminosidad de referencia de la piel: mediana de $L$ (CIELAB) en una banda periférica del 12 % de la imagen, descartando píxeles casi negros ($L > 20$).
+2. Para cada grupo $i$: área $A_i$, $\Delta L_i = L_{piel} - \overline{L^*_i}$, centralidad $C_i = \exp\left(-\frac{(x_i-0.5)^2+(y_i-0.5)^2}{2\cdot 0.35^2}\right)$ y fracción en el borde $B_i$.
+3. Filtros: $0.003 \le A_i \le 0.45$ y $\Delta L_i > 8$. Puntaje $S_i = 0.55\,D_i + 0.30\,C_i + 0.15\,(1-B_i)$ con $D_i = \mathrm{clip}\left(\frac{\Delta L_i - 8}{35}, 0, 1\right)$.
+4. Se seleccionan los grupos con $S_i \ge 0.65 \max S$; cierre morfológico (elipse 5×5), relleno de huecos y eliminación de componentes con área < 0.2 % de la imagen o con centroide a más de 0.65 del centro.
+
+El código de ChatGPT (función `segment_lesion`, ver sección 8) usa OpenCV; aquí se reimplementa con NumPy/SciPy reproduciendo línea a línea los pasos 4 a 10 (luminosidad, puntaje, selección y post-procesamiento), y se aplica sobre **nuestros** grupos de K-medias para que la comparación use exactamente el mismo pipeline, muestra y semilla. Un detalle importante del código: `cv2.cvtColor(..., COLOR_RGB2LAB)` sobre `uint8` devuelve $L$ en escala 0–255 (no 0–100), por lo que los umbrales del código ($\Delta L > 8$, divisor 35, $L > 20$) equivalen a 3.1, 13.7 y 7.8 unidades de $L^*$: son bastante más permisivos que lo que describe la explicación textual de la IAG. Se respeta el código, que es lo que la IAG entregó para implementar. ChatGPT también sugirió probar CIELAB como espacio de características; no se aplicó porque el enunciado fija la representación $[\beta R, \beta G, \beta B, \lambda x, \lambda y]$.
+""")
 code(r"""
-# Recomendación de la IAG (ver sección 8). Se evalúa con K fijo, tal como la IAG lo sugirió,
-# y también con K elegido por silueta, para separar el efecto de cada recomendación.
-REC_IAG = __REC_IAG__
+REC_IAG = dict(beta=1.0, lam=0.30, K=5)
+ELIPSE_5X5 = np.array([[0, 0, 1, 0, 0], [1, 1, 1, 1, 1], [1, 1, 1, 1, 1], [1, 1, 1, 1, 1], [0, 0, 1, 0, 0]], bool)
 
 
-def criterio_iag(img, etiquetas):
-    return __CRIT_IAG__
+def luminancia_cielab(img):
+    # L* de CIELAB (iluminante D65) a partir de sRGB.
+    c = img.astype(float) / 255.0
+    lin = np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+    Y = lin @ np.array([0.2126, 0.7152, 0.0722])
+    f = np.where(Y > (6 / 29) ** 3, np.cbrt(Y), Y / (3 * (6 / 29) ** 2) + 4 / 29)
+    return 116 * f - 16
 
 
-filas_iag = []
+def criterio_iag(img, etiquetas, margen=0.12, l_negro=20, sigma=0.35):
+    # Pasos 4-10 de segment_lesion (ChatGPT). L en la escala 0-255 de OpenCV (uint8).
+    h, w, _ = img.shape
+    L = np.round(luminancia_cielab(img) * 255 / 100).ravel()
+    filas, cols = np.mgrid[0:h, 0:w]
+    fy, fx = (filas / (h - 1)).ravel(), (cols / (w - 1)).ravel()
+    my, mx = max(1, int(margen * h)), max(1, int(margen * w))
+    borde = np.zeros((h, w), bool)
+    borde[:my, :] = borde[-my:, :] = borde[:, :mx] = borde[:, -mx:] = True
+    en_banda = borde.ravel()
+    piel = L[en_banda & (L > l_negro)]
+    if len(piel) == 0:
+        piel = L[L > l_negro]
+    if len(piel) == 0:
+        piel = L
+    l_piel = np.median(piel)
+    puntajes = {}
+    for k in np.unique(etiquetas):
+        sel = etiquetas == k
+        area, delta_l = sel.mean(), l_piel - L[sel].mean()
+        if not (0.003 <= area <= 0.45 and delta_l > 8):
+            continue
+        D = np.clip((delta_l - 8) / 35, 0, 1)
+        C = np.exp(-((fx[sel].mean() - 0.5) ** 2 + (fy[sel].mean() - 0.5) ** 2) / (2 * sigma ** 2))
+        B = en_banda[sel].mean()
+        puntajes[k] = 0.55 * D + 0.30 * C + 0.15 * (1 - B)
+    if not puntajes or max(puntajes.values()) <= 0:
+        return np.zeros((h, w), np.uint8)
+    maximo = max(puntajes.values())
+    elegidos = [k for k, p in puntajes.items() if p >= 0.65 * maximo and p > 0]
+    m = np.isin(etiquetas, elegidos).reshape(h, w)
+    # Cierre morfológico como cv2.MORPH_CLOSE (la erosión no se come el borde de la imagen)
+    m = ndi.binary_erosion(ndi.binary_dilation(m, ELIPSE_5X5), ELIPSE_5X5, border_value=1)
+    m = ndi.binary_fill_holes(m)
+    comp, n = ndi.label(m, structure=np.ones((3, 3)))  # conectividad 8
+    final = np.zeros((h, w), bool)
+    for j in range(1, n + 1):
+        cj = comp == j
+        if cj.sum() < 0.002 * h * w:
+            continue
+        cy, cx = ndi.center_of_mass(cj)
+        if np.hypot(cx / (w - 1) - 0.5, cy / (h - 1) - 0.5) < 0.65:
+            final |= cj
+    return final.astype(np.uint8)
+
+
+# Se evalúa la recomendación tal cual (K = 5 fijo) y, para separar efectos, también
+# con K por silueta y cruzando su criterio con el nuestro (criterio B).
+filas_iag, mascaras_iag = [], {}
 for i, (img, msk) in datos_aj.items():
     d = agrupar_todos_k(img, REC_IAG["beta"], REC_IAG["lam"])
-    for modo, k in [("K fijo IAG", REC_IAG["K"]), ("K por silueta", k_por_silueta(d))]:
+    for modo, k in [("K=5 fijo (IAG)", REC_IAG["K"]), ("K por silueta", k_por_silueta(d))]:
         lab = d[k][0]
+        m_iag = criterio_iag(img, lab)
+        if modo.startswith("K=5"):
+            mascaras_iag[i] = (lab, m_iag)
         filas_iag.append({"imagen": i, "modo": modo, "K": k,
-                          "dice criterio IAG": dice(msk, criterio_iag(img, lab)),
-                          "dice criterio B": dice(msk, mascara_criterio_b(img, lab)),
+                          "Dice criterio IAG": dice(msk, m_iag),
+                          "Dice criterio B": dice(msk, mascara_criterio_b(img, lab)),
+                          "precisión IAG": precision_score(msk.ravel(), m_iag.ravel(), zero_division=0),
+                          "recall IAG": recall_score(msk.ravel(), m_iag.ravel(), zero_division=0),
                           "v_measure": v_measure_score(msk.ravel(), lab)})
 res_iag = pd.DataFrame(filas_iag)
-display(res_iag.groupby("modo")[["K", "dice criterio IAG", "dice criterio B", "v_measure"]].mean())
-res_iag.pivot(index="imagen", columns="modo", values="dice criterio IAG").round(3).T
+display(res_iag.groupby("modo")[["K", "Dice criterio IAG", "Dice criterio B", "precisión IAG",
+                                  "recall IAG", "v_measure"]].mean())
+res_iag.pivot(index="imagen", columns="modo", values="Dice criterio IAG").round(3).T
+""")
+code(r"""
+# Recomendación de la IAG (K=5 fijo) vs. nuestro mejor resultado previo (λ/β=0.25, K por silueta, criterio B)
+nuestro = res[res["config"] == "λ/β=0.25"].set_index("imagen")["B: oscuros sin borde + limpieza"]
+iag = res_iag[res_iag["modo"] == "K=5 fijo (IAG)"].set_index("imagen")["Dice criterio IAG"]
+dif = (iag - nuestro).sort_values()
+peores = list(dif.index[:3]) + list(dif.index[-1:])
+
+fig, axes = plt.subplots(len(peores), 4, figsize=(13, 2.9 * len(peores)))
+for r, i in enumerate(peores):
+    img, msk = datos_aj[i]; lab, m_iag = mascaras_iag[i]
+    d_n = GRUPOS[(i, "λ/β=0.25")]; m_n = mascara_criterio_b(img, d_n[k_por_silueta(d_n)][0])
+    paneles = [(img, i), (pintar_grupos(img, lab), "grupos IAG (K=5, λ/β=0.3)"),
+               (m_iag, f"máscara IAG  Dice={iag[i]:.2f}"), (m_n, f"máscara nuestra  Dice={nuestro[i]:.2f}")]
+    for ax, (p, t) in zip(axes[r], paneles):
+        ax.imshow(p, cmap="gray" if p.ndim == 2 else None); ax.set_title(t, fontsize=9); ax.axis("off")
+    for ax in axes[r, 2:]: ax.contour(msk, levels=[0.5], colors="lime", linewidths=1)
+plt.tight_layout(); plt.show()
 """)
 md(T("iag_resultado"))
 
@@ -456,14 +550,6 @@ md(r"""
 Cada grupo se pinta con el color promedio de sus píxeles; el contorno verde es la máscara de referencia y el número es el Dice del criterio final con el K elegido por silueta. Además de las configuraciones exigidas (las dos mejores, solo color y solo posición) se agrega λ/β = 2 para ilustrar qué pasa cuando la posición domina. Se eligieron cinco imágenes representativas: un éxito (ISIC_0000137), la lesión de bajo contraste (ISIC_0000094), la lesión diminuta (ISIC_0000114) y los dos peores casos de la configuración final (ISIC_0000116 e ISIC_0000150).
 """)
 code(r"""
-def pintar_grupos(img, etiquetas):
-    rgb = img.reshape(-1, 3).astype(float)
-    out = np.zeros_like(rgb)
-    for k in np.unique(etiquetas):
-        out[etiquetas == k] = rgb[etiquetas == k].mean(0)
-    return out.reshape(img.shape).astype(np.uint8)
-
-
 crit_final = CRITERIOS[CONFIG_FINAL["criterio"]]
 cfgs_vis = list(dict.fromkeys(TOP2 + ["solo color", "λ/β=2", "solo posición"]))
 imgs_vis = ["ISIC_0000137", "ISIC_0000094", "ISIC_0000114", "ISIC_0000116", "ISIC_0000150"]
@@ -579,7 +665,9 @@ md("### 7.3 Comparación entre ajuste y prueba\n\n" + T("p3"))
 md("### 7.4 Dos limitaciones del modelo\n\n" + T("p4"))
 md("### 7.5 Falsos positivos, falsos negativos, sesgos y generalización en DermAlpes\n\n" + T("p5"))
 
-md("## 8. Uso de herramientas de IA generativa\n\n" + T("iag_seccion"))
+hist = open("historial_IAG.md").read().split("\n", 1)[1] if os.path.exists("historial_IAG.md") else ""
+hist = "<details>\n<summary><b>Historial de la conversación con ChatGPT (clic para desplegar)</b></summary>\n\n" + hist.replace("## ", "#### ") + "\n</details>"
+md("## 8. Uso de herramientas de IA generativa\n\n" + T("iag_seccion").replace("__HISTORIAL__", hist))
 
 md(r"""
 ## 9. Bonos
@@ -650,8 +738,5 @@ nb = nbf.v4.new_notebook(cells=cells)
 nb.metadata = {"kernelspec": {"display_name": "Python (ML Labs)", "language": "python", "name": "ml-labs"},
                "language_info": {"name": "python"}}
 src = nbf.writes(nb)
-rec = txt.get("REC_IAG", 'dict(beta=1.0, lam=0.3, K=3)  # PROVISIONAL: reemplazar por la recomendación real')
-crit = txt.get("CRIT_IAG", "mascara_criterio_a(img, etiquetas)  # PROVISIONAL")
-src = src.replace("__REC_IAG__", json.dumps(rec)[1:-1]).replace("__CRIT_IAG__", json.dumps(crit)[1:-1])
 open(OUT, "w").write(src)
 print("ok", len(cells), "celdas")

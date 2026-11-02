@@ -13,6 +13,8 @@ Laboratorio 4 - Segmentación de imágenes con técnicas de agrupación (ISIS261
   `ISBI2016_ISIC_Part1_Training_GroundTruth.zip` y las imágenes del ISIC Archive (CC-0).
 - `enunciado/`: enunciado del laboratorio.
 - `prompt_IAG.md`: prompt para la actividad de verificación con IAG.
+- `historial_IAG.md`: conversación completa con ChatGPT (prompt, respuesta y código), también
+  incluida en la sección 8 del notebook.
 - `guion_video.md`: guion del video (máximo 3 minutos).
 - `scripts/build_notebook.py`: script que ensambla `Laboratorio4.ipynb` celda por celda
   (usado para poder versionar el contenido del notebook como texto).

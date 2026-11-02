@@ -2,7 +2,13 @@ import json, sys
 A = {}
 
 A["iag_resultado"] = r"""
-> ⚠️ **COMPLETAR después de la consulta real a la IAG** (ver `prompt_IAG.md`). Reemplazar `REC_IAG` y `criterio_iag` en la celda anterior por lo que recomiende la herramienta, volver a ejecutar y redactar aquí: Dice promedio de la recomendación con K fijo y con K por silueta, comparación con nuestro criterio B (0.890) y en qué imágenes acertó o falló.
+**Resultados de la recomendación de ChatGPT en las 15 imágenes de ajuste:**
+
+- **Tal como la recomendó (λ/β = 0.30, K = 5 fijo, su criterio): Dice promedio 0.898**, con precisión 0.939 y recall 0.874. Es ligeramente superior al mejor resultado de nuestro protocolo (0.890 con λ/β = 0.25, K por silueta y criterio B). Supera a nuestra configuración en 8 de las 15 imágenes, con las mayores mejoras en ISIC_0000150 (0.79 → 0.92: conserva el componente satélite y la periferia clara) y ISIC_0000116 (0.76 → 0.84), y pierde en 7, con los mayores retrocesos en ISIC_0000133 (0.89 → 0.78: incluye parte del viñeteado del borde izquierdo) e ISIC_0000114 (0.89 → 0.82: conserva una peca lejana como segunda componente).
+- **Con K elegido por silueta, su criterio baja a 0.867**, por debajo de nuestro criterio B sobre los mismos grupos (0.889). Con K = 5, nuestro criterio B obtiene 0.887. La ventaja de la recomendación no viene del criterio por sí solo, sino de la **combinación** de un K más alto con un criterio que une varios grupos de tonos intermedios y conserva varias componentes.
+- El V-measure con K = 5 es bajo (0.351) aunque el Dice sea alto: otro ejemplo de que una buena máscara no requiere una buena correspondencia grupos–etiquetas.
+
+**Decisión.** La configuración final se mantiene dentro del protocolo del enunciado, que exige **seleccionar K mediante el coeficiente de silueta**. Bajo esa regla, el criterio propuesto por la IAG es peor que el nuestro (0.867 vs. 0.889), así que la recomendación con K = 5 fijo no es una configuración elegible. Además, la diferencia de 0.008 con 15 imágenes es pequeña frente a la desviación entre imágenes (≈0.065), y los errores que introduce (incluir viñeteado o pecas como lesión) son falsos positivos que nuestro criterio evita. Lo que sí confirma la recomendación es el hallazgo de la sección 4.5: K ≈ 5 produce mejores máscaras que el K que prefiere la silueta. Es la mejora más clara que proponemos para una versión futura.
 """
 
 A["justificacion_final"] = r"""
@@ -90,23 +96,36 @@ A["p5"] = r"""
 """
 
 A["iag_seccion"] = r"""
-> ⚠️ **COMPLETAR con la conversación real.** El enunciado exige adjuntar el historial de la consulta (prompt, respuesta e interacciones). El prompt sugerido está en `prompt_IAG.md`.
-
 ### 8.1 Declaración del uso
-- **Claude Code (Anthropic, modelo Claude Opus 5.5):** generación inicial del código del notebook (pipeline, experimentos, criterios de máscara, figuras y bonos), descarga y preparación de los datos, depuración y redacción inicial de las justificaciones y del análisis de resultados a partir de los valores obtenidos. Todo el contenido fue revisado por el grupo. *(ajustar según lo que efectivamente revisaron, modificaron o redactaron ustedes)*
-- **Verificación obligatoria:** *(nombre de la herramienta usada para la consulta del prompt de `prompt_IAG.md`)*: recomendación de β, λ, K y del criterio de máscara.
+- **Claude Code (Anthropic, modelo Claude Opus 5.5):** generación inicial del código del notebook (pipeline, experimentos, criterios de máscara, figuras y bonos), descarga y preparación de los datos, depuración, reimplementación del criterio sugerido por ChatGPT, y redacción inicial de las justificaciones y del análisis de resultados a partir de los valores obtenidos. Todo el contenido fue revisado por el grupo. *(ajustar según lo que efectivamente revisaron, modificaron o redactaron ustedes)*
+- **ChatGPT (OpenAI):** actividad de verificación obligatoria. Se le pidió recomendar β, λ, K y un criterio para construir la máscara.
 
-### 8.2 Prompt utilizado y respuesta
-*(pegar el prompt, la respuesta y las interacciones siguientes, o adjuntar el enlace/captura del historial)*
+### 8.2 Prompts utilizados
+- **Claude Code:** se le entregó el enunciado completo del laboratorio y se le pidió desarrollarlo; luego, revisar que el notebook cumpliera con las prácticas y lineamientos del curso, e incorporar y evaluar la respuesta de ChatGPT.
+- **ChatGPT:** el prompt describe las imágenes en palabras, sin adjuntarlas y sin mencionar el nombre del conjunto de datos. Conversación completa: https://chatgpt.com/share/6ae8df75-3638-83e9-8da6-aa9ecf44f645. A continuación se transcriben el prompt y la respuesta completa, incluido el código.
 
-### 8.3 ¿Funcionó la recomendación en nuestras imágenes? ¿En qué acertó y en qué falló?
-*(usar los resultados de la sección 4.2)*
+__HISTORIAL__
+
+### 8.3 ¿La recomendación funcionó en nuestras imágenes? ¿En qué acertó y en qué falló?
+**Funcionó bien en promedio:** con su configuración exacta (λ/β = 0.30, K = 5 fijo) obtuvo un Dice de 0.898 en ajuste, comparable e incluso ligeramente superior a nuestro 0.890 (sección 4.2).
+
+**En qué acertó:**
+- Que el color debe dominar y la posición actuar solo como regularización débil: su λ/β = 0.30 cae justo en el rango estable que encontramos (0 a 0.5) y advirtió que λ alto parte las lesiones grandes, lo que observamos con λ/β ≥ 1.
+- Que el grupo más oscuro no sirve como criterio por el viñeteado. Es exactamente el fallo de nuestro criterio A (Dice 0 en ISIC_0000133).
+- Que la lesión puede ocupar varios grupos y que K = 5 captura mejor sus tonos. Coincide con nuestro análisis de K oráculo (sección 4.5).
+- Penalizar el borde y usar post-procesamiento: las mismas ideas que nuestro criterio B.
+
+**En qué falló:**
+- **No respeta el protocolo del laboratorio:** propone K fijo, mientras que el enunciado exige seleccionarlo por silueta. Con K por silueta su criterio baja a 0.867, por debajo del nuestro (0.889).
+- **Falsos positivos:** al conservar todas las componentes con centroide a menos de 0.65 del centro y darle solo un 15 % de peso al borde, incluye parte del viñeteado en ISIC_0000133 (Dice 0.78) y una peca lejana en ISIC_0000114 (0.82).
+- **Inconsistencia entre la explicación y el código:** la explicación habla de umbrales en unidades de $L^*$ (0–100), pero el código usa la escala 0–255 de OpenCV. Sus umbrales ($\Delta L > 8$, divisor 35) son en realidad de 3.1 y 13.7 unidades de $L^*$, mucho más permisivos que lo explicado. Sin revisar el código línea a línea no se habría notado.
+- Varias sugerencias no aplican a este laboratorio: cambiar a CIELAB como espacio de características (el enunciado fija RGB + posición) o calcular IoU y especificidad.
 
 ### 8.4 ¿Por qué la IAG no podía anticipar el comportamiento del método en nuestras imágenes?
-La IAG solo conoce la descripción textual de las imágenes, no los datos. El desempeño de K-medias depende de la distribución concreta de colores de cada imagen (contraste lesión/piel, presencia de viñeteado, pelos, eritema, tamaño de la lesión), de la escala de normalización que elegimos ([0, 1] para color y coordenadas) y de la interacción entre K, la silueta y el criterio de máscara; un mismo λ/β tiene efectos opuestos en lesiones grandes y pequeñas (sección 7.1). Sin evaluar en las imágenes no hay forma de saber, por ejemplo, que la silueta elegiría K = 2 casi siempre, o que el grupo más oscuro sería el viñeteado en algunas imágenes. Por eso la recomendación debe tratarse como una hipótesis inicial a validar con el protocolo de ajuste.
+La IAG solo conocía una descripción textual, no los datos. El desempeño de K-medias depende de la distribución concreta de colores de cada imagen: contraste lesión/piel, intensidad del viñeteado, pecas, pelos, eritema y tamaño de la lesión. También depende de decisiones que no se ven en una descripción, como la escala de normalización, la resolución y la interacción entre K, la silueta y el criterio de máscara. Un mismo λ/β tiene efectos opuestos en lesiones grandes y pequeñas (sección 7.1), y un mismo criterio acierta en una imagen y falla en otra por detalles como una mancha oscura en la esquina. Por eso sus umbrales (0.65 del puntaje máximo, distancia 0.65, pesos 0.55/0.30/0.15) son heurísticas genéricas que la propia IAG pidió validar con imágenes anotadas, y no podía saber, por ejemplo, que la silueta elegiría K = 2 en casi todas nuestras imágenes. Su recomendación es una hipótesis razonable que solo el protocolo de ajuste puede confirmar o descartar.
 
 ### 8.5 Aportes propios
-*(qué fue decidido, desarrollado o modificado por el grupo; qué se aprendió)*
+> ⚠️ **COMPLETAR por el grupo:** qué fue desarrollado, modificado o decidido por ustedes, qué ajustes hicieron sobre el código o la explicación original, y qué aprendieron del proceso.
 """
 
 A["bonoA"] = r"""
